@@ -193,3 +193,38 @@ func TestMonitorSnapshotTableTracking(t *testing.T) {
 		assert.InDelta(t, 0.5, m.Report().TableProgress[table], 0.0001)
 	})
 }
+
+func TestMonitorUnanalysedTableRowEstimate(t *testing.T) {
+	table := TableFQN{Schema: `"public"`, Table: `"cart"`}
+
+	t.Run("a negative estimate is not cached, so it is retried", func(t *testing.T) {
+		stub := &estimateStub{count: -1}
+		m := newTestMonitor(t, stub)
+
+		m.TrackSnapshotTable(t.Context(), table)
+		m.UpdateSnapshotProgressForTable(table, 100)
+		assert.NotContains(t, m.Report().TableProgress, table,
+			"there is no denominator yet, so nothing can be reported")
+
+		// ANALYZE has since run.
+		stub.mu.Lock()
+		stub.count = 500
+		stub.mu.Unlock()
+
+		m.TrackSnapshotTable(t.Context(), table)
+		m.UpdateSnapshotProgressForTable(table, 250)
+		assert.InDelta(t, 0.5, m.Report().TableProgress[table], 0.0001,
+			"the estimate must be picked up once it exists")
+	})
+
+	t.Run("zero is a real count and is not retried", func(t *testing.T) {
+		// An empty table reports 0, which is a genuine answer rather than
+		// the -1 that means unknown.
+		stub := &estimateStub{count: 0}
+		m := newTestMonitor(t, stub)
+
+		m.TrackSnapshotTable(t.Context(), table)
+		m.TrackSnapshotTable(t.Context(), table)
+		assert.Equal(t, 1, stub.queryCount(), "a real estimate must be cached, not re-read")
+	})
+}
